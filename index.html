@@ -800,6 +800,10 @@ tbody tr:hover td{background:rgba(46,204,113,.04);}
             🔄 Sincronizar com Nuvem
           </button>
           <div id="sync-status" style="font-size:11px;color:var(--text3);text-align:center;min-height:16px"></div>
+          <button class="btn btn-out" onclick="diagnosticarFirebase()" style="font-size:12px">
+            🔍 Testar Conexão Firebase
+          </button>
+          <div id="diag-result" style="font-size:11px;color:var(--text3);margin-top:6px;word-break:break-all;max-height:120px;overflow-y:auto"></div>
           <button class="btn btn-out" onclick="expBackup()">↓ Exportar Backup JSON</button>
           <button class="btn btn-red" onclick="if(confirm('Apagar TODOS os dados?'))limparTudo()">⚠ Limpar Todos os Dados</button>
         </div>
@@ -942,26 +946,7 @@ let membros=[];
 let itens=[];
 let vendas=[];
 
-if(!membros.length){
-  membros=[
-    {id:1,nome:'João das Cordas',plano:'mestre',data:'10/01/2024'},
-    {id:2,nome:'Maria Laço',plano:'cavaleiro',data:'05/03/2024'},
-    {id:3,nome:'Pedro Rodeio',plano:'padawan',data:'22/07/2024'},
-    {id:4,nome:'Ana Gaúcha',plano:'',data:'15/01/2025'},
-  ];
-  fsSet('cfg','membros',membros);save('gl_membros',membros);
-}
-if(!itens.length){
-  itens=[
-    {id:1,nome:'Laço de Couro 60cm',cat:'consumivel',preco:45.00,qtd:30},
-    {id:2,nome:'Cera para Laço',cat:'consumivel',preco:18.50,qtd:50},
-    {id:3,nome:'Cordão Trançado 10m',cat:'consumivel',preco:32.00,qtd:15},
-    {id:4,nome:'Esporas Profissionais',cat:'equipamento',preco:120.00,qtd:8},
-    {id:5,nome:'Luva de Vaqueiro',cat:'acessorio',preco:55.00,qtd:3},
-    {id:6,nome:'Resina de Aderência',cat:'consumivel',preco:22.00,qtd:0},
-  ];
-  fsSet('cfg','itens',itens);save('gl_itens',itens);
-}
+// Dados demo removidos — dados vêm sempre do Firebase
 
 let nxtM=1,nxtI=1,nxtV=1; // recalculados no initApp
 let isAdmin=false;
@@ -1876,6 +1861,29 @@ function limparTudo(){
 // ═══════════════════════════════════════════════
 // SINCRONIZAÇÃO MANUAL
 // ═══════════════════════════════════════════════
+async function diagnosticarFirebase(){
+  const div=document.getElementById('diag-result');
+  div.style.color='var(--text3)';
+  div.textContent='⏳ Testando...';
+  try{
+    // Teste 1: escrita
+    const url=`${_FB_BASE}/cfg/teste_diag?key=${_FB_API_KEY}`;
+    const w=await fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({fields:{data:{stringValue:JSON.stringify({ts:Date.now()})}}})});
+    if(!w.ok){ div.style.color='var(--red)'; div.textContent='❌ Escrita falhou: HTTP '+w.status+' — '+await w.text(); return; }
+    // Teste 2: leitura
+    const r=await fetch(url);
+    if(!r.ok){ div.style.color='var(--red)'; div.textContent='❌ Leitura falhou: HTTP '+r.status; return; }
+    const d=await r.json();
+    const val=d?.fields?.data?.stringValue;
+    div.style.color='var(--accent)';
+    div.textContent='✅ Firebase OK! Leitura e escrita funcionando. Valor: '+val;
+  }catch(e){
+    div.style.color='var(--red)';
+    div.textContent='❌ Erro de rede: '+e.message;
+  }
+}
+
 async function sincronizarAgora(){
   if(!window._fbReady){ toast('⚠ Firebase não conectado','err'); return; }
   const btn=document.getElementById('btn-sync');
