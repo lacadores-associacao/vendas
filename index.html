@@ -10,7 +10,7 @@
 <!-- Firebase SDK via módulo ES — compatível com GitHub Pages -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, getDoc, setDoc, onSnapshot, enableIndexedDbPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+import { getFirestore, doc, getDoc, getDocFromServer, setDoc, onSnapshot, enableIndexedDbPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 const firebaseConfig = {
   apiKey: "AIzaSyDc-SBhV01_QdT5B6RvdKOqc36i_ls-WFo",
@@ -32,7 +32,8 @@ enableIndexedDbPersistence(db).catch(err=>{
 
 // Expõe funções para o código global
 window._fsDoc     = (col,key) => doc(db, col, key);
-window._fsGetDoc  = getDoc;
+window._fsGetDoc       = getDoc;
+window._fsGetDocServer = getDocFromServer;
 window._fsSetDoc  = setDoc;
 window._fsSnap    = onSnapshot;
 window._fbReady   = true;
@@ -461,11 +462,22 @@ tbody tr:hover td{background:rgba(46,204,113,.04);}
       <div>
         <div class="card">
           <div class="ctitle">👤 Comprador</div>
-          <div class="fld">
+          <div class="fld" style="position:relative">
             <label>Selecionar Membro</label>
-            <select id="sel-mem" onchange="onSelectMembro()">
-              <option value="">— Visitante —</option>
-            </select>
+            <input type="text" id="mem-search" placeholder="🔍 Buscar membro..."
+              autocomplete="off"
+              oninput="filtrarMembrosBusca(this.value)"
+              onfocus="abrirDropMem()"
+              onblur="setTimeout(()=>fecharDropMem(),200)"
+              style="padding-right:32px">
+            <span id="mem-search-clear" onclick="limparSelMembro()"
+              style="position:absolute;right:10px;top:32px;cursor:pointer;color:var(--text3);
+              font-size:16px;display:none;line-height:1">✕</span>
+            <div id="mem-dropdown"
+              style="display:none;position:absolute;top:100%;left:0;right:0;z-index:300;
+              background:var(--surface2);border:1px solid var(--border-h);border-radius:10px;
+              box-shadow:0 8px 24px rgba(0,0,0,.5);max-height:220px;overflow-y:auto;margin-top:4px">
+            </div>
           </div>
           <div class="mem-display" id="mem-display">
             <p style="font-size:12px;color:var(--text3)">Comprando como visitante</p>
@@ -883,13 +895,23 @@ function fsSet(col, key, val){
 
 async function fsGet(col, key, def){
   if(window._fbReady){
+    // Tenta buscar direto do servidor (ignora cache offline)
     try{
-      const s=await window._fsGetDoc(window._fsDoc(col,key));
+      const s=await window._fsGetDocServer(window._fsDoc(col,key));
       if(s.exists()){
         const v=_fsUnpack(s.data());
         if(v!==null){save('gl_'+col+'_'+key,v);return v;}
       }
-    }catch(e){}
+    }catch(e){
+      // Offline ou erro — tenta cache local do Firebase
+      try{
+        const s=await window._fsGetDoc(window._fsDoc(col,key));
+        if(s.exists()){
+          const v=_fsUnpack(s.data());
+          if(v!==null){save('gl_'+col+'_'+key,v);return v;}
+        }
+      }catch(e2){}
+    }
   }
   return load('gl_'+col+'_'+key,def);
 }
@@ -1061,22 +1083,83 @@ function getPct(plano){return(plano&&PLANOS[plano])?PLANOS[plano].pct:0;}
 // VENDA — MEMBRO
 // ═══════════════════════════════════════════════
 function populateSelMembro(){
-  const s=document.getElementById('sel-mem');
-  s.innerHTML='<option value="">— Visitante —</option>';
-  membros.forEach(m=>{
-    const pl=m.plano&&PLANOS[m.plano]?` [${PLANOS[m.plano].label}]`:' [Sem Plano]';
-    s.innerHTML+=`<option value="${m.id}">${m.nome}${pl}</option>`;
-  });
+  // Compatibilidade — atualiza dropdown se estiver aberto
+  const inp=document.getElementById('mem-search');
+  if(inp) filtrarMembrosBusca(inp.value||'');
 }
-function onSelectMembro(){
-  const id=parseInt(document.getElementById('sel-mem').value)||null;
+
+function renderDropMem(lista){
+  const dd=document.getElementById('mem-dropdown');
+  if(!dd)return;
+  if(!lista.length){
+    dd.innerHTML='<div style="padding:12px 14px;font-size:12px;color:var(--text3)">Nenhum membro encontrado</div>';
+    return;
+  }
+  dd.innerHTML=[
+    `<div class="drop-item" onmousedown="selecionarMembro(null)"
+      style="padding:10px 14px;cursor:pointer;font-size:12px;color:var(--text3);
+      border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+      <span>👤</span> <span>— Visitante —</span>
+    </div>`,
+    ...lista.map(m=>`
+      <div class="drop-item" onmousedown="selecionarMembro(${m.id})"
+        style="padding:10px 14px;cursor:pointer;font-size:13px;
+        border-bottom:1px solid rgba(255,255,255,.04);display:flex;align-items:center;justify-content:space-between;gap:8px"
+        onmouseover="this.style.background='rgba(46,204,113,.08)'"
+        onmouseout="this.style.background=''">
+        <span style="font-weight:600">${m.nome}</span>
+        ${badgePlano(m.plano)}
+      </div>`)
+  ].join('');
+}
+
+function filtrarMembrosBusca(q){
+  const lista=q?membros.filter(m=>m.nome.toLowerCase().includes(q.toLowerCase())):membros;
+  renderDropMem(lista);
+  const dd=document.getElementById('mem-dropdown');
+  if(dd)dd.style.display='';
+  const cl=document.getElementById('mem-search-clear');
+  if(cl)cl.style.display=q?'':'none';
+}
+
+function abrirDropMem(){
+  const q=document.getElementById('mem-search')?.value||'';
+  // Só abre dropdown se já tiver algo digitado
+  if(q.length>0){
+    filtrarMembrosBusca(q);
+    const dd=document.getElementById('mem-dropdown');
+    if(dd)dd.style.display='';
+  }
+}
+
+function fecharDropMem(){
+  const dd=document.getElementById('mem-dropdown');
+  if(dd)dd.style.display='none';
+}
+
+function selecionarMembro(id){
   carState.memId=id;
+  const inp=document.getElementById('mem-search');
+  const cl=document.getElementById('mem-search-clear');
   const div=document.getElementById('mem-display');
-  if(!id){div.innerHTML='<p style="font-size:12px;color:var(--text3)">Comprando como visitante</p>';calcResumo();return;}
+  if(!id){
+    if(inp)inp.value='';
+    if(cl)cl.style.display='none';
+    div.innerHTML='<p style="font-size:12px;color:var(--text3)">Comprando como visitante</p>';
+    calcResumo();return;
+  }
   const m=membros.find(x=>x.id===id);
+  if(inp)inp.value=m.nome;
+  if(cl)cl.style.display='';
   div.innerHTML=`<div class="mem-nome">${m.nome}</div>${badgePlano(m.plano)}`;
   calcResumo();
 }
+
+function limparSelMembro(){
+  selecionarMembro(null);
+}
+
+function onSelectMembro(){} // mantido para compatibilidade
 
 // ═══════════════════════════════════════════════
 // VENDA — CATÁLOGO (auto-carrinho)
@@ -1172,8 +1255,7 @@ function selPag(tipo,el){
 }
 function limparVenda(){
   carState={memId:null,itens:[],pag:null};catQtd={};
-  document.getElementById('sel-mem').value='';
-  document.getElementById('mem-display').innerHTML='<p style="font-size:12px;color:var(--text3)">Comprando como visitante</p>';
+  selecionarMembro(null);
   document.querySelectorAll('.pbtn').forEach(b=>b.classList.remove('on'));
   renderCatalogo(document.getElementById('busca-cat').value);
   renderCarrinho();calcResumo();
@@ -1871,8 +1953,22 @@ async function initApp(){
       <div>
         <div class="card">
           <div class="ctitle">👤 Comprador</div>
-          <div class="fld"><label>Selecionar Membro</label>
-            <select id="sel-mem" onchange="onSelectMembro()"><option value="">— Visitante —</option></select>
+          <div class="fld" style="position:relative">
+            <label>Selecionar Membro</label>
+            <input type="text" id="mem-search" placeholder="🔍 Buscar membro..."
+              autocomplete="off"
+              oninput="filtrarMembrosBusca(this.value)"
+              onfocus="abrirDropMem()"
+              onblur="setTimeout(()=>fecharDropMem(),200)"
+              style="padding-right:32px">
+            <span id="mem-search-clear" onclick="limparSelMembro()"
+              style="position:absolute;right:10px;top:32px;cursor:pointer;color:var(--text3);
+              font-size:16px;display:none;line-height:1">✕</span>
+            <div id="mem-dropdown"
+              style="display:none;position:absolute;top:100%;left:0;right:0;z-index:300;
+              background:var(--surface2);border:1px solid var(--border-h);border-radius:10px;
+              box-shadow:0 8px 24px rgba(0,0,0,.5);max-height:220px;overflow-y:auto;margin-top:4px">
+            </div>
           </div>
           <div class="mem-display" id="mem-display">
             <p style="font-size:12px;color:var(--text3)">Comprando como visitante</p>
