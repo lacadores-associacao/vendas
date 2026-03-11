@@ -7,37 +7,84 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&family=Sora:wght@400;600;700;800&display=swap"
       rel="stylesheet" media="print" onload="this.media='all'">
-<!-- Firebase SDK via módulo ES — compatível com GitHub Pages -->
-<script type="module">
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getFirestore, doc, getDoc, getDocFromServer, setDoc, onSnapshot, enableIndexedDbPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+<!-- Firebase via REST API — sem SDK, funciona em qualquer host -->
+<script>
+const _FB_PROJECT = 'associacao-lacadores';
+const _FB_API_KEY = 'AIzaSyDc-SBhV01_QdT5B6RvdKOqc36i_ls-WFo';
+const _FB_BASE    = `https://firestore.googleapis.com/v1/projects/${_FB_PROJECT}/databases/(default)/documents`;
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDc-SBhV01_QdT5B6RvdKOqc36i_ls-WFo",
-  authDomain: "associacao-lacadores.firebaseapp.com",
-  projectId: "associacao-lacadores",
-  storageBucket: "associacao-lacadores.firebasestorage.app",
-  messagingSenderId: "564980057571",
-  appId: "1:564980057571:web:2984be6b540777b8518cd6"
+// Converte valor JS → formato Firestore REST
+function _toFS(val){
+  if(val===null||val===undefined) return {nullValue:null};
+  if(typeof val==='boolean') return {booleanValue:val};
+  if(typeof val==='number')  return {doubleValue:val};
+  if(typeof val==='string')  return {stringValue:val};
+  if(Array.isArray(val))     return {stringValue:JSON.stringify(val)};
+  if(typeof val==='object'){
+    const fields={};
+    for(const k in val) fields[k]=_toFS(val[k]);
+    return {mapValue:{fields}};
+  }
+  return {stringValue:String(val)};
+}
+
+// Converte formato Firestore REST → valor JS
+function _fromFS(fv){
+  if(!fv) return null;
+  if('nullValue'    in fv) return null;
+  if('booleanValue' in fv) return fv.booleanValue;
+  if('integerValue' in fv) return Number(fv.integerValue);
+  if('doubleValue'  in fv) return fv.doubleValue;
+  if('stringValue'  in fv) return fv.stringValue;
+  if('arrayValue'   in fv) return (fv.arrayValue.values||[]).map(_fromFS);
+  if('mapValue'     in fv){
+    const obj={};
+    const fields=fv.mapValue.fields||{};
+    for(const k in fields) obj[k]=_fromFS(fields[k]);
+    return obj;
+  }
+  return null;
+}
+
+// GET — lê documento do Firestore
+async function _fbGet(col, key){
+  const url=`${_FB_BASE}/${col}/${key}?key=${_FB_API_KEY}`;
+  const r=await fetch(url);
+  if(!r.ok) return null;
+  const doc=await r.json();
+  if(!doc.fields) return null;
+  const obj={};
+  for(const k in doc.fields) obj[k]=_fromFS(doc.fields[k]);
+  return obj;
+}
+
+// SET — salva documento no Firestore
+async function _fbSet(col, key, data){
+  const fields={};
+  for(const k in data) fields[k]=_toFS(data[k]);
+  const url=`${_FB_BASE}/${col}/${key}?key=${_FB_API_KEY}`;
+  await fetch(url,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({fields})});
+}
+
+// Adapta para a interface usada no código
+window._fsDoc          = (col,key)=>({col,key});
+window._fsGetDoc       = (ref)=>_fbGet(ref.col,ref.key);
+window._fsGetDocServer = (ref)=>_fbGet(ref.col,ref.key);
+window._fsSetDoc       = (ref,data)=>_fbSet(ref.col,ref.key,data);
+window._fsSnap         = (ref,cb)=>{
+  // Polling a cada 15s como substituto do onSnapshot
+  cb({exists:()=>false, data:()=>null, metadata:{hasPendingWrites:false}});
+  const iv=setInterval(async()=>{
+    const d=await _fbGet(ref.col,ref.key);
+    if(d) cb({exists:()=>true, data:()=>d, metadata:{hasPendingWrites:false}});
+  },15000);
+  return ()=>clearInterval(iv);
 };
+window._fbReady=true;
 
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
-
-// Persistência offline
-enableIndexedDbPersistence(db).catch(err=>{
-  if(err.code==='failed-precondition') console.warn('Firebase: múltiplas abas');
-  else if(err.code==='unimplemented')  console.warn('Firebase: navegador sem suporte offline');
+document.addEventListener('DOMContentLoaded',()=>{
+  if(typeof startWhenReady==='function') startWhenReady();
 });
-
-// Expõe funções para o código global
-window._fsDoc     = (col,key) => doc(db, col, key);
-window._fsGetDoc       = getDoc;
-window._fsGetDocServer = getDocFromServer;
-window._fsSetDoc  = setDoc;
-window._fsSnap    = onSnapshot;
-window._fbReady   = true;
-window.dispatchEvent(new Event('firebase-ready'));
 </script>
 <style>
 :root {
@@ -875,53 +922,43 @@ const load=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch{retur
 const save=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
 
 // ── Firebase helpers (aguarda módulo ES carregar) ──
+// ── Firebase REST helpers ──
 function _fsPayload(val){
-  return Array.isArray(val)?{_arr:JSON.stringify(val)}:
-         (typeof val==='object'&&val!==null?val:{_val:JSON.stringify(val)});
+  // Para arrays e primitivos, embala em {_arr:...} ou {_val:...}
+  if(Array.isArray(val)) return {_arr:JSON.stringify(val)};
+  if(typeof val!=='object'||val===null) return {_val:JSON.stringify(val)};
+  return val; // objetos passam direto
 }
 function _fsUnpack(d){
-  if(!d)return null;
-  return d._arr!==undefined?JSON.parse(d._arr):d._val!==undefined?JSON.parse(d._val):d;
+  if(!d) return null;
+  if(d._arr!==undefined) return JSON.parse(d._arr);
+  if(d._val!==undefined) return JSON.parse(d._val);
+  return d;
 }
 
 function fsSet(col, key, val){
-  save('gl_'+col+'_'+key, val); // salva cache local sempre
-  if(!window._fbReady)return;
-  try{
-    window._fsSetDoc(window._fsDoc(col,key), _fsPayload(val));
-  }catch(e){}
+  save('gl_'+col+'_'+key, val);
+  if(!window._fbReady) return;
+  try{ window._fsSetDoc(window._fsDoc(col,key), _fsPayload(val)); }catch(e){}
 }
 
 async function fsGet(col, key, def){
   if(window._fbReady){
-    // Tenta buscar direto do servidor (ignora cache offline)
     try{
-      const s=await window._fsGetDocServer(window._fsDoc(col,key));
-      if(s.exists()){
-        const v=_fsUnpack(s.data());
-        if(v!==null){save('gl_'+col+'_'+key,v);return v;}
-      }
-    }catch(e){
-      // Offline ou erro — tenta cache local do Firebase
-      try{
-        const s=await window._fsGetDoc(window._fsDoc(col,key));
-        if(s.exists()){
-          const v=_fsUnpack(s.data());
-          if(v!==null){save('gl_'+col+'_'+key,v);return v;}
-        }
-      }catch(e2){}
-    }
+      const d=await window._fsGetDocServer(window._fsDoc(col,key));
+      if(d){ const v=_fsUnpack(d); if(v!==null){save('gl_'+col+'_'+key,v);return v;} }
+    }catch(e){}
   }
   return load('gl_'+col+'_'+key,def);
 }
 
 function fsListen(col, key, cb){
-  if(!window._fbReady)return;
+  if(!window._fbReady) return;
   window._fsSnap(window._fsDoc(col,key), s=>{
-    if(!s.exists()||s.metadata.hasPendingWrites)return;
+    if(!s.exists()) return;
     const v=_fsUnpack(s.data());
     if(v!==null){save('gl_'+col+'_'+key,v);cb(v);}
-  },()=>{});
+  });
 }
 const fmt=v=>'R$ '+Number(v).toFixed(2).replace('.',',');
 const mkCSV=rows=>'\uFEFF'+rows.map(r=>r.map(c=>`"${String(c??'').replace(/"/g,'""')}"`).join(',')).join('\n');
@@ -1819,7 +1856,7 @@ function carregarAdmin(){
 function uploadLogo(input){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=e=>{APP_LOGO=e.target.result;fsSet('cfg','app_logo',{_val:JSON.stringify(APP_LOGO)});save('gl_app_logo',APP_LOGO);carregarAdmin();aplicarIdentidade();toast('✓ Logo salvo!','ok');};
+  reader.onload=e=>{APP_LOGO=e.target.result;fsSet('cfg','app_logo',APP_LOGO);save('gl_app_logo',APP_LOGO);carregarAdmin();aplicarIdentidade();toast('✓ Logo salvo!','ok');};
   reader.readAsDataURL(file);input.value='';
 }
 function removerLogo(){APP_LOGO='';save('gl_app_logo','');carregarAdmin();aplicarIdentidade();toast('Logo removido.');}
@@ -1829,7 +1866,7 @@ function salvarIdentidade(){
   const sub=document.getElementById('adm-app-sub').value.trim();
   if(!nome){toast('⚠ Informe o nome!','err');return;}
   APP_NOME=nome;APP_SUB=sub;
-  fsSet('cfg','app_nome',{_val:JSON.stringify(APP_NOME)});save('gl_app_nome',APP_NOME);fsSet('cfg','app_sub',{_val:JSON.stringify(APP_SUB)});save('gl_app_sub',APP_SUB);
+  fsSet('cfg','app_nome',APP_NOME);save('gl_app_nome',APP_NOME);fsSet('cfg','app_sub',APP_SUB);save('gl_app_sub',APP_SUB);
   aplicarIdentidade();
   toast('✓ Identidade atualizada!','ok');
 }
@@ -1837,7 +1874,7 @@ function salvarIdentidade(){
 function uploadQR(input){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=e=>{PIX_QR=e.target.result;fsSet('cfg','pix_qr',{_val:JSON.stringify(PIX_QR)});save('gl_pix_qr',PIX_QR);carregarAdmin();toast('✓ QR Code salvo!','ok');};
+  reader.onload=e=>{PIX_QR=e.target.result;fsSet('cfg','pix_qr',PIX_QR);save('gl_pix_qr',PIX_QR);carregarAdmin();toast('✓ QR Code salvo!','ok');};
   reader.readAsDataURL(file);input.value='';
 }
 function removerQR(){PIX_QR='';save('gl_pix_qr','');carregarAdmin();toast('QR Code removido.');}
@@ -1849,7 +1886,7 @@ function salvarPlanos(){
   fsSet('cfg','planos',PLANOS);save('gl_planos',PLANOS);calcResumo();
   toast('✓ Descontos atualizados!','ok');
 }
-function salvarPIX(){PIX_KEY=document.getElementById('adm-pix').value.trim();fsSet('cfg','pix_key',{_val:JSON.stringify(PIX_KEY)});save('gl_pix_key',PIX_KEY);toast('✓ Chave PIX salva!','ok');}
+function salvarPIX(){PIX_KEY=document.getElementById('adm-pix').value.trim();fsSet('cfg','pix_key',PIX_KEY);save('gl_pix_key',PIX_KEY);toast('✓ Chave PIX salva!','ok');}
 function salvarCreds(){
   const ua=document.getElementById('adm-u-atual').value.trim();
   const un=document.getElementById('adm-u-novo').value.trim();
@@ -1906,6 +1943,8 @@ async function sincronizarAgora(){
     const now=new Date().toLocaleTimeString('pt-BR');
     st.textContent='✓ Sincronizado às '+now;
     st.style.color='var(--accent)';
+    // Força releitura imediata do servidor após enviar
+    await pollFirebase();
     toast('✓ Todos os dados enviados para a nuvem!','ok');
   } catch(e){
     st.textContent='⚠ Erro — verifique a conexão';
@@ -1918,7 +1957,7 @@ async function sincronizarAgora(){
 
 // Aguarda Firebase módulo ES carregar, depois inicia
 function startWhenReady(){
-  if(window._fbReady) startWhenReady();
+  if(window._fbReady) initApp();
   else window.addEventListener('firebase-ready', initApp, {once:true});
 }
 
@@ -1936,16 +1975,11 @@ async function initApp(){
   PLANOS   = await fsGet('cfg','planos',  PLANOS);
   CREDS    = await fsGet('cfg','creds',   CREDS);
 
-  const pk = await fsGet('cfg','pix_key', {_val:JSON.stringify('')});
-  PIX_KEY  = typeof pk==='string'?pk:(pk._val!==undefined?JSON.parse(pk._val):PIX_KEY);
-  const aq = await fsGet('cfg','app_nome',{_val:JSON.stringify('GDAAE')});
-  APP_NOME = typeof aq==='string'?aq:(aq._val!==undefined?JSON.parse(aq._val):APP_NOME);
-  const as_ = await fsGet('cfg','app_sub',{_val:JSON.stringify('Associação dos Laçadores')});
-  APP_SUB  = typeof as_==='string'?as_:(as_._val!==undefined?JSON.parse(as_._val):APP_SUB);
-  const al = await fsGet('cfg','app_logo',{_val:JSON.stringify('')});
-  APP_LOGO = typeof al==='string'?al:(al._val!==undefined?JSON.parse(al._val):APP_LOGO);
-  const pq = await fsGet('cfg','pix_qr',{_val:JSON.stringify('')});
-  PIX_QR   = typeof pq==='string'?pq:(pq._val!==undefined?JSON.parse(pq._val):PIX_QR);
+  PIX_KEY  = await fsGet('cfg','pix_key',  '') || '';
+  APP_NOME = await fsGet('cfg','app_nome', 'GDAAE') || 'GDAAE';
+  APP_SUB  = await fsGet('cfg','app_sub',  'Associação dos Laçadores') || 'Associação dos Laçadores';
+  APP_LOGO = await fsGet('cfg','app_logo', '') || '';
+  PIX_QR   = await fsGet('cfg','pix_qr',  '') || '';
 
   // Recalcular IDs máximos
   nxtM = membros.length ? Math.max(...membros.map(m=>m.id))+1 : 1;
@@ -2020,10 +2054,27 @@ async function initApp(){
   populateSelMembro();
   renderCatalogo();
 
-  // Listeners tempo real — sincroniza entre dispositivos automaticamente
+  // ── Polling automático a cada 20s — busca direto do servidor ──
+  async function pollFirebase(){
+    if(!navigator.onLine||!window._fbReady)return;
+    try{
+      const [sm,si,sv]=await Promise.all([
+        window._fsGetDocServer(window._fsDoc('cfg','membros')),
+        window._fsGetDocServer(window._fsDoc('cfg','itens')),
+        window._fsGetDocServer(window._fsDoc('cfg','vendas')),
+      ]);
+      let mudou=false;
+      if(sm.exists()){const v=_fsUnpack(sm.data());if(v){const j=JSON.stringify(v);if(j!==JSON.stringify(membros)){membros=v;nxtM=membros.length?Math.max(...membros.map(m=>m.id))+1:1;populateSelMembro();if(document.getElementById('mem-tbody'))renderMembros();mudou=true;}}}
+      if(si.exists()){const v=_fsUnpack(si.data());if(v){const j=JSON.stringify(v);if(j!==JSON.stringify(itens)){itens=v;nxtI=itens.length?Math.max(...itens.map(i=>i.id))+1:1;renderCatalogo(document.getElementById('busca-cat')?.value||'');if(document.getElementById('itens-tbody'))renderItens();mudou=true;}}}
+      if(sv.exists()){const v=_fsUnpack(sv.data());if(v){const j=JSON.stringify(v);if(j!==JSON.stringify(vendas)){vendas=v;nxtV=vendas.length?Math.max(...vendas.map(x=>x.id))+1:1;if(document.getElementById('panel-historico')?.classList.contains('on'))renderHistorico();if(document.getElementById('panel-relatorio')?.classList.contains('on'))renderRelatorio();mudou=true;}}}
+      if(mudou){const ind=document.getElementById('sync-ind');if(ind)ind.title='Última sync: '+new Date().toLocaleTimeString('pt-BR');}
+    }catch(e){}
+  }
+  setInterval(pollFirebase, 20000); // a cada 20 segundos
+  // Também tenta onSnapshot como complemento
   fsListen('cfg','membros', v=>{ membros=v; nxtM=membros.length?Math.max(...membros.map(m=>m.id))+1:1; populateSelMembro(); if(document.getElementById('mem-tbody'))renderMembros(); });
   fsListen('cfg','itens',   v=>{ itens=v;   nxtI=itens.length?Math.max(...itens.map(i=>i.id))+1:1;     renderCatalogo(document.getElementById('busca-cat')?.value||''); if(document.getElementById('itens-tbody'))renderItens(); });
-  fsListen('cfg','vendas',  v=>{ vendas=v;  nxtV=vendas.length?Math.max(...vendas.map(x=>x.id))+1:1;   if(document.getElementById('hist-lista')&&document.getElementById('panel-historico').classList.contains('on'))renderHistorico(); if(document.getElementById('panel-relatorio').classList.contains('on'))renderRelatorio(); });
+  fsListen('cfg','vendas',  v=>{ vendas=v;  nxtV=vendas.length?Math.max(...vendas.map(x=>x.id))+1:1;   if(document.getElementById('panel-historico')?.classList.contains('on'))renderHistorico(); if(document.getElementById('panel-relatorio')?.classList.contains('on'))renderRelatorio(); });
 
   // Indicador de status online/offline
   const ind=document.createElement('div');
@@ -2041,7 +2092,10 @@ async function initApp(){
   updateOnline();
 }
 
-initApp();
+// fallback: se Firebase já carregou antes do DOM
+document.addEventListener('DOMContentLoaded',()=>{
+  if(window._fbReady && typeof startWhenReady==='function') startWhenReady();
+});
 </script>
 </body>
 </html>
